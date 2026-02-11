@@ -102,7 +102,74 @@ class BitwardenVault extends VaultProvider {
     }
   }
 
+  /**
+   * Ensure Bitwarden is authenticated and vault is unlocked
+   * Tries API key auth first, then falls back to password/session
+   */
+  private ensureAuthenticated(): void {
+    // Check if already unlocked
+    try {
+      const status = JSON.parse(execSync('bw status', { encoding: 'utf-8' }));
+      if (status.status === 'unlocked') {
+        return; // Already good to go
+      }
+    } catch {
+      // Not authenticated, try to login
+    }
+
+    // Try API key auth (preferred for automation) - this does login only
+    const clientId = process.env.BW_CLIENTID;
+    const clientSecret = process.env.BW_CLIENTSECRET;
+    let loggedIn = false;
+
+    if (clientId && clientSecret) {
+      try {
+        execSync('bw login --apikey', {
+          env: { ...process.env, BW_CLIENTID: clientId, BW_CLIENTSECRET: clientSecret },
+          stdio: 'ignore'
+        });
+        loggedIn = true;
+      } catch (e) {
+        console.warn('⚠️  Bitwarden API key login failed, trying password/session...');
+      }
+    }
+
+    // Try password-based unlock (needed after API key login or for direct unlock)
+    const password = process.env.BW_PASSWORD;
+    if (password) {
+      try {
+        execSync('bw unlock --raw', {
+          env: { ...process.env, BW_PASSWORD: password },
+          stdio: 'ignore'
+        });
+        return;
+      } catch (e) {
+        console.warn('⚠️  Bitwarden password unlock failed.');
+      }
+    }
+
+    // Check for existing BW_SESSION
+    if (process.env.BW_SESSION) {
+      try {
+        execSync('bw status', { stdio: 'ignore' });
+        return;
+      } catch {
+        // Session invalid
+      }
+    }
+
+    throw new Error(
+      'Bitwarden vault is locked. Please set one of:\n' +
+      '  • BW_PASSWORD (master password for unlock)\n' +
+      '  • BW_SESSION (session token from: export BW_SESSION=$(bw unlock --raw))\n' +
+      '\nNote: BW_CLIENTID + BW_CLIENTSECRET only handle login, not vault unlock.\n' +
+      'For full automation, set BW_PASSWORD or BW_SESSION in your .env file.'
+    );
+  }
+
   async getCredentials(site: string, config: SiteConfig): Promise<VaultCredentials> {
+    this.ensureAuthenticated();
+
     const creds: VaultCredentials = {};
 
     try {

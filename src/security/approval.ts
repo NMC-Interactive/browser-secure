@@ -141,12 +141,12 @@ export async function requestApproval(
 ): Promise<ApprovalResult> {
   const effectiveTier = getEffectiveApprovalTier(request);
 
-  // No approval needed
+  // No approval needed for read-only actions
   if (effectiveTier === 'none') {
     return { approved: true };
   }
 
-  // Handle unattended mode
+  // Handle unattended mode (NOW THE DEFAULT)
   if (options?.unattended?.enabled) {
     // In unattended mode, we require explicit credential source
     if (!options.unattended.credentialSource) {
@@ -162,7 +162,10 @@ export async function requestApproval(
     // For destructive actions in unattended mode, we need explicit confirmation
     // unless skipApproval is set (which is risky and should be used carefully)
     if (effectiveTier === '2fa' && !options.unattended.skipApproval) {
-      throw new Error('Destructive actions require approval in unattended mode. Use --skip-approval with caution.');
+      throw new Error(
+        'Destructive actions require approval in unattended mode. ' +
+        'Use --skip-approval with caution, or use --interactive for manual approval.'
+      );
     }
 
     // Generate token for unattended session
@@ -170,7 +173,8 @@ export async function requestApproval(
     return { approved: true, token, duration: 3600, requires2fa: effectiveTier === '2fa' };
   }
 
-  // Auto-approve for testing/non-interactive
+  // INTERACTIVE MODE (requires --interactive flag)
+  // Auto-approve for testing/non-interactive (legacy behavior)
   if (options?.autoApprove) {
     const token = generateToken();
     return { approved: true, token, duration: 300, requires2fa: effectiveTier === '2fa' };
@@ -186,7 +190,7 @@ export async function requestApproval(
     return await requestApprovalWith2FA(request);
   }
 
-  // Show approval prompt
+  // Show approval prompt (only in interactive mode)
   console.log('\n🛡️  Browser-Secure Approval Required\n');
   console.log(`Action: ${request.action}`);
   if (request.site) console.log(`Site: ${request.site}`);

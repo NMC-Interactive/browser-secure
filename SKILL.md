@@ -15,27 +15,24 @@ Secure browser automation with vault-backed credentials, approval gates, and aud
 ## Quick Start
 
 ```bash
-# Navigate to a public site (no vault needed)
+# Open the welcome page (default when no URL provided)
+browser-secure navigate
+
+# Navigate to a public site
 browser-secure navigate https://example.com
 
-# List available Chrome profiles
-browser-secure navigate https://example.com --list-profiles
-
-# Navigate using a specific Chrome profile (with your cookies/logins)
-browser-secure navigate https://github.com --profile "Profile 1"
-
-# Or select profile interactively
-browser-secure navigate https://github.com --profile select
-
-# Navigate with auto-vault credential discovery (interactive)
+# Navigate with auto-vault credential discovery
 browser-secure navigate https://app.neilpatel.com/ --auto-vault
 
 # Navigate to an authenticated site (pre-configured)
 browser-secure navigate https://nytimes.com --site=nytimes
 
-# Perform actions
+# Perform actions (fully automated)
 browser-secure act "click the login button"
 browser-secure extract "get the article headlines"
+
+# Use interactive mode (with approval prompts)
+browser-secure navigate https://bank.com --interactive
 
 # Close and cleanup
 browser-secure close
@@ -203,7 +200,37 @@ The setup automatically handles:
 
 ### Configure Vault (Optional)
 
-After setup, configure your preferred vault:
+After setup, configure your preferred vault using **environment variables** (recommended) or direct CLI login:
+
+#### Option A: .env File (Recommended for Automation)
+
+```bash
+cd ~/.openclaw/workspace/skills/browser-secure
+cp .env.example .env
+# Edit .env with your credentials
+```
+
+**Full Automation (API Key + Password):**
+```bash
+# .env - For fully automated vault access
+BW_CLIENTID=user.xxx-xxx
+BW_CLIENTSECRET=your-secret-here
+BW_PASSWORD=your-master-password
+```
+
+**How it works:**
+1. `BW_CLIENTID/BW_CLIENTSECRET` → Authenticates with Bitwarden (replaces username/password)
+2. `BW_PASSWORD` → Decrypts your vault (required for automated access)
+
+**Alternative: Session Token**
+```bash
+# If you prefer not to store your master password:
+export BW_SESSION=$(bw unlock --raw)
+# Then add to .env:
+# BW_SESSION=xxx...
+```
+
+#### Option B: Direct CLI Login
 
 ```bash
 # Bitwarden (recommended - free)
@@ -238,13 +265,24 @@ browser-secure close
 # Install
 brew install bitwarden-cli
 
-# Login
-bw login
-export BW_SESSION=$(bw unlock --raw)
+# Setup .env file
+cd ~/.openclaw/workspace/skills/browser-secure
+cp .env.example .env
+# Edit .env and add:
+#   BW_CLIENTID=your-api-key-id
+#   BW_CLIENTSECRET=your-api-key-secret  
+#   BW_PASSWORD=your-master-password
 
-# Use
+# Use - credentials auto-loaded from .env
 browser-secure navigate https://app.neilpatel.com/ --auto-vault
 ```
+
+**Authentication vs Unlock:**
+- **API Key** (`BW_CLIENTID/BW_CLIENTSECRET`) → Logs you into Bitwarden
+- **Master Password** (`BW_PASSWORD`) → Decrypts your vault contents
+- Both are needed for fully automated workflows
+
+**Get API Key:** https://vault.bitwarden.com/#/settings/security/keys
 
 ### 1Password (Paid)
 
@@ -280,7 +318,8 @@ browser-secure navigate https://app.neilpatel.com/
 
 | Command | Description |
 |---------|-------------|
-| `navigate <url>` | Open URL, optionally authenticate |
+| `navigate` | **Open welcome page** (default when no URL provided) |
+| `navigate <url>` | Navigate to a URL |
 | `navigate <url> --profile <id>` | Use specific Chrome profile |
 | `navigate <url> --profile select` | Interactively choose Chrome profile |
 | `navigate <url> --list-profiles` | List available Chrome profiles |
@@ -296,22 +335,77 @@ browser-secure navigate https://app.neilpatel.com/
 | `status` | Show session status |
 | `audit` | View audit logs |
 
-## Security Features
+## Welcome Page (Default)
 
-### Vault Integration
-- **Bitwarden** ⭐ (default, free)
-- **1Password** (paid alternative)
-- **macOS Keychain** (local)
-- **Environment variables** (fallback)
+When you run `browser-secure navigate` without a URL, it opens the **welcome page** located at:
 
-### Approval Gates
+```
+~/.openclaw/workspace/skills/browser-secure/assets/welcome.html
+```
+
+The welcome page provides:
+- 📖 **Onboarding guide** — Why browser-secure exists and how it works
+- 🔌 **Extension links** — Direct install for Bitwarden and OpenClaw Browser Relay
+- 🗝️ **Vault setup** — Step-by-step for Bitwarden or 1Password
+- ✅ **Setup checklist** — Interactive checklist to track progress
+- 🛡️ **Security info** — "Your vault is secure" messaging with key features
+
+**Pro tip:** Use the welcome page as your starting point for new profiles:
+```bash
+# Create a profile, then immediately open welcome page
+browser-secure profile --create "Work Automation" --launch
+# Then in another terminal:
+browser-secure navigate  # Opens welcome page in the active session
+```
+
+## Approval Modes (Hybrid Design)
+
+browser-secure operates in **unattended mode by default**, making it ideal for agent automation while preserving safety guardrails.
+
+### Default Mode: Unattended (Automation-First)
+
+```bash
+# All commands run unattended by default - no interactive prompts
+browser-secure navigate https://example.com
+browser-secure act "fill the search form"
+browser-secure extract "get all links"
+```
+
+In this mode:
+- ✅ All non-destructive actions execute immediately
+- ✅ Credentials auto-injected from vault
+- ✅ Audit trail written automatically
+- ⚠️ Destructive actions (delete, purchase) require `--skip-approval` or `--interactive`
+
+### Interactive Mode (Human-in-the-Loop)
+
+For sensitive operations, use `--interactive` to enable approval prompts:
+
+```bash
+# Enable tiered approval gates
+browser-secure navigate https://bank.com --interactive
+
+# Approve individual actions
+browser-secure act "transfer $1000" --interactive
+```
+
+Approval tiers in interactive mode:
 
 | Tier | Actions | Approval |
 |------|---------|----------|
 | Read-only | navigate, screenshot, extract | None |
 | Form fill | type, select, click | Prompt |
 | Authentication | fill_password, submit_login | Always |
-| Destructive | delete, purchase | 2FA |
+| Destructive | delete, purchase | 2FA required |
+
+### Force Override (Emergency)
+
+```bash
+# Skip ALL approvals including destructive (DANGEROUS)
+browser-secure act "delete account" --skip-approval
+```
+
+⚠️ **Warning:** `--skip-approval` bypasses all safety checks. Use only in fully automated, sandboxed environments.
 
 ### Session Security
 - Time-bounded (30 min default, auto-expiry)
@@ -338,7 +432,10 @@ browser-secure navigate https://app.neilpatel.com/
 | Variable | Purpose |
 |----------|---------|
 | `BROWSER_SECURE_CONFIG` | Config file path |
-| `BW_SESSION` | Bitwarden session token |
+| `BW_CLIENTID` | Bitwarden API key ID (for automation) |
+| `BW_CLIENTSECRET` | Bitwarden API key secret (for automation) |
+| `BW_PASSWORD` | Bitwarden master password (alternative) |
+| `BW_SESSION` | Bitwarden session token (legacy) |
 | `OP_SERVICE_ACCOUNT_TOKEN` | 1Password service account |
 | `BROWSER_SECURE_{SITE}_PASSWORD` | Env-based credentials |
 
@@ -362,7 +459,11 @@ browser-secure navigate https://app.neilpatel.com/
 - Bitwarden: `brew install bitwarden-cli`
 - 1Password: `brew install 1password-cli`
 
-**Bitwarden "Vault is locked"**: Run `export BW_SESSION=$(bw unlock --raw)`
+**Bitwarden "Vault is locked"**: 
+- If using .env file: Check that `BW_CLIENTID` and `BW_CLIENTSECRET` are set correctly
+- Or run: `export BW_SESSION=$(bw unlock --raw)`
+
+**Bitwarden API key not working**: Ensure your API key has access to the vault items you need. API keys are created at: https://vault.bitwarden.com/#/settings/security/keys
 
 **Site not configured**: Use `--auto-vault` for interactive setup, or add manually to `~/.browser-secure/config.yaml`
 

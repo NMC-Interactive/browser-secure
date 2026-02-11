@@ -77,6 +77,11 @@ export function isHostAllowed(url: string): { allowed: boolean; reason?: string 
 }
 
 export function validateUrl(url: string): { valid: boolean; error?: string } {
+  // Allow welcome page (local file) - it's rendered via setContent, not actually navigated
+  if (url.startsWith('file://') && url.includes('welcome.html')) {
+    return { valid: true };
+  }
+
   const networkCheck = isHostAllowed(url);
   if (!networkCheck.allowed) {
     return { valid: false, error: networkCheck.reason };

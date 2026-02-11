@@ -23,6 +23,56 @@ import {
 import { validateUrl } from '../security/network.js';
 import { ChromeProfile } from './chrome-profiles.js';
 
+// Detect system Chrome path
+function getChromePath(): string | undefined {
+  const platform = os.platform();
+
+  if (platform === 'darwin') {
+    // macOS
+    const macPath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    if (fs.existsSync(macPath)) {
+      return macPath;
+    }
+  } else if (platform === 'linux') {
+    // Linux - try common paths
+    const linuxPaths = [
+      '/usr/bin/google-chrome',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/chrome',
+      '/snap/bin/chrome',
+    ];
+    for (const p of linuxPaths) {
+      if (fs.existsSync(p)) {
+        return p;
+      }
+    }
+    // Try which command
+    try {
+      return execSync('which google-chrome', { encoding: 'utf-8' }).trim();
+    } catch {
+      try {
+        return execSync('which chromium', { encoding: 'utf-8' }).trim();
+      } catch {
+        // Fall through to undefined
+      }
+    }
+  } else if (platform === 'win32') {
+    // Windows
+    const winPaths = [
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+      `${process.env.LOCALAPPDATA}\\Google\\Chrome\\Application\\chrome.exe`,
+    ];
+    for (const p of winPaths) {
+      if (p && fs.existsSync(p)) {
+        return p;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 let browser: Browser | null = null;
 let page: Page | null = null;
 let actionCounter = 0;
@@ -147,25 +197,34 @@ export async function startBrowser(url: string, options: BrowserOptions = {}): P
 
   // Initialize Playwright with security settings
   const config = loadConfig();
+  const chromePath = getChromePath();
+
+  if (chromePath) {
+    console.log(`🌐 Using system Chrome: ${chromePath}`);
+  } else {
+    console.log('⚠️  System Chrome not found, using bundled Chromium (extensions unavailable)');
+  }
 
   if (options.profile) {
     // Use persistent context with Chrome profile
     console.log(`🔐 Using Chrome profile: ${options.profile.name} [${options.profile.id}]`);
-    
+
     const userDataDir = options.profile.path.replace(/\/Default$/, '').replace(/\/Profile \d+$/, '');
     const profileArg = options.profile.id === 'Default' ? '' : `--profile-directory=${options.profile.id}`;
-    
+
     const context = await chromium.launchPersistentContext(userDataDir, {
       headless: options.headless ?? false,
+      executablePath: chromePath,
       args: profileArg ? [profileArg] : [],
       ...(config.isolation.incognitoMode ? {} : {})
     });
-    
+
     page = await context.newPage();
   } else {
     // Use isolated incognito context (default secure behavior)
     browser = await chromium.launch({
       headless: options.headless ?? false,
+      executablePath: chromePath,
     });
 
     const context = await browser.newContext({
@@ -178,9 +237,21 @@ export async function startBrowser(url: string, options: BrowserOptions = {}): P
 
   // Navigate to URL
   logAction('navigate', { url });
-  await page.goto(url);
 
-  console.log(`✅ Navigated to ${url}`);
+  // Handle welcome page (file:// protocol is blocked by Playwright, use setContent instead)
+  if (url.startsWith('file://') && url.includes('welcome.html')) {
+    const welcomePath = url.replace('file://', '');
+    try {
+      const welcomeHtml = fs.readFileSync(welcomePath, 'utf-8');
+      await page.setContent(welcomeHtml, { waitUntil: 'networkidle' });
+      console.log('✅ Opened welcome page');
+    } catch (e) {
+      throw new Error(`Failed to load welcome page: ${e}`);
+    }
+  } else {
+    await page.goto(url);
+    console.log(`✅ Navigated to ${url}`);
+  }
 
   // Handle site authentication if specified or auto-vault is enabled
   if (options.site) {

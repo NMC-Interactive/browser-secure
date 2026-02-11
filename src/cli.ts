@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
+import 'dotenv/config';
 import { Command } from 'commander';
 import { spawn } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   startBrowser,
   performAction,
@@ -17,6 +20,9 @@ import { listAvailableVaults, getSiteCredentials } from './vault/index.js';
 import { clearCredentialCache } from './security/approval.js';
 import { listChromeProfiles, promptProfileSelection, getProfileById, createChromeProfile } from './browser/chrome-profiles.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const program = new Command();
 
 program
@@ -24,15 +30,20 @@ program
   .description('Secure browser automation with vault integration')
   .version('1.0.0');
 
+// Welcome page path (used as default)
+const WELCOME_PAGE_PATH = `file://${path.join(__dirname, '..', 'assets', 'welcome.html')}`;
+
 // Navigate command
 program
-  .command('navigate <url>')
-  .description('Navigate to a URL')
+  .command('navigate [url]')
+  .description('Navigate to a URL (defaults to welcome page if no URL provided)')
   .option('-s, --site <site>', 'Site configuration for authentication')
   .option('--auto-vault', 'Auto-discover credentials from vault (interactive)')
   .option('--headless', 'Run in headless mode')
   .option('-t, --timeout <seconds>', 'Session timeout in seconds', '1800')
-  .option('--unattended', 'Run in unattended mode (skips all prompts)')
+  .option('--unattended', 'Run in unattended mode (default: true)', true)
+  .option('--interactive', 'Enable interactive approval prompts (overrides --unattended)')
+  .option('--skip-approval', 'Skip all approvals including destructive actions (DANGEROUS)')
   .option('--credential-source <source>', 'Credential source for unattended mode (env|vault|cache)', 'vault')
   .option('-p, --profile <profile>', 'Chrome profile to use (id or "select" to choose interactively)')
   .option('--list-profiles', 'List available Chrome profiles and exit')
@@ -52,15 +63,18 @@ program
         process.exit(0);
       }
 
-      // Validate credential source
+      // Determine mode: interactive overrides unattended
+      const isInteractive = options.interactive === true;
+      const isUnattended = !isInteractive;
+
+      // Validate credential source for unattended mode
       const credentialSource = options.credentialSource;
       if (!['env', 'vault', 'cache'].includes(credentialSource)) {
         console.error(`Error: Invalid credential source "${credentialSource}". Must be one of: env, vault, cache`);
         process.exit(1);
       }
 
-      // In unattended mode, credential source is required
-      if (options.unattended) {
+      if (isUnattended) {
         const sourceCheck = checkCredentialSource(credentialSource);
         if (!sourceCheck.valid) {
           console.error(`Error: ${sourceCheck.error}`);
@@ -84,15 +98,22 @@ program
         }
       }
 
-      await startBrowser(url, {
+      // Use welcome page as default if no URL provided
+      const targetUrl = url || WELCOME_PAGE_PATH;
+      if (!url) {
+        console.log('🦞 No URL provided, opening welcome page...');
+      }
+
+      await startBrowser(targetUrl, {
         site: options.site,
         autoVault: options.autoVault,
         headless: options.headless,
         timeout: parseInt(options.timeout) * 1000,
         profile: selectedProfile || undefined,
-        unattended: options.unattended ? {
+        unattended: isUnattended ? {
           enabled: true,
-          credentialSource: credentialSource
+          credentialSource: credentialSource,
+          skipApproval: options.skipApproval === true
         } : undefined
       });
     } catch (e) {
@@ -105,15 +126,22 @@ program
 program
   .command('act <instruction>')
   .description('Perform a natural language action')
-  .option('-y, --yes', 'Auto-approve without prompting')
-  .option('--unattended', 'Run in unattended mode')
+  .option('-y, --yes', 'Auto-approve without prompting (deprecated: use --unattended)')
+  .option('--unattended', 'Run in unattended mode (default: true)', true)
+  .option('--interactive', 'Enable interactive approval prompts (overrides --unattended)')
+  .option('--skip-approval', 'Skip all approvals including destructive actions (DANGEROUS)')
   .action(async (instruction, options) => {
     try {
+      // Determine mode: interactive overrides unattended
+      const isInteractive = options.interactive === true;
+      const isUnattended = !isInteractive;
+
       await performAction(instruction, {
         autoApprove: options.yes,
-        unattended: options.unattended ? {
+        unattended: isUnattended ? {
           enabled: true,
-          credentialSource: 'vault'
+          credentialSource: 'vault',
+          skipApproval: options.skipApproval === true
         } : undefined
       });
     } catch (e) {
