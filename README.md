@@ -6,7 +6,7 @@
 
 **"Never trust, always verify, encrypt everything, audit all actions"**
 
-Browser Secure fetches credentials from your password manager (Bitwarden or 1Password) only when needed. Credentials aren't stored in shell history, log files, or environment variables. They're retrieved from the vault, used for the login action, then discarded from memory.
+Browser Secure fetches credentials from your password manager (Bitwarden or 1Password) only when needed. Credentials are retrieved from your vault (Bitwarden/1Password) when needed, used immediately, then cleared from memory. For automation convenience, optional `.env` file support is available (gitignored by default) — use this only on trusted, private machines. They're retrieved from the vault, used for the login action, then discarded from memory.
 
 ---
 
@@ -351,13 +351,17 @@ browser-secure navigate https://github.com --auto-vault
 
 Store credentials locally (no cloud sync). Good for single-machine use.
 
-### Environment Variables (Emergency Fallback)
+### Environment Variables (Fallback)
+
+**Note:** Environment variables are supported for compatibility, but vault integration is recommended for security.
 
 ```bash
 export BROWSER_SECURE_GITHUB_USERNAME="user@example.com"
 export BROWSER_SECURE_GITHUB_PASSWORD="secret"
 browser-secure navigate https://github.com --site=github
 ```
+
+For automated workflows, a `.env` file can be used (see `.env.example`). This stores credentials in a gitignored file that is loaded at runtime — suitable only for private, trusted machines.
 
 ---
 

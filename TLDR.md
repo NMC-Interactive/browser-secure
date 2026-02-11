@@ -22,9 +22,11 @@
 
 Updated browser-secure skill with:
 1. **Bitwarden as default vault provider** (was 1Password)
-2. **`.env` file support** — Auto-load credentials without manual exports
+2. **Optional `.env` file support** — Auto-load credentials without manual exports (use only on trusted, private machines)
 3. **API Key authentication** — `BW_CLIENTID/BW_CLIENTSECRET` for automated login
 4. **Master password unlock** — `BW_PASSWORD` for automated vault decryption
+
+> ⚠️ **Security Note:** `.env` files are gitignored and convenient for automation, but vault integration (Bitwarden/1Password) remains the recommended secure approach.
 
 ## New: .env File Setup
 

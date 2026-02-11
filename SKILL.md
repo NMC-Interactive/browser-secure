@@ -151,7 +151,7 @@ browser-secure navigate https://gmail.com --profile select
 | **Incognito (default)** | ❌ None | ❌ None | ❌ None | Secure, isolated testing |
 | **Chrome Profile** | ✅ Yes | ✅ Yes | ✅ Yes | Access existing sessions |
 
-**Security Note**: Profile data is read-only; Browser Secure won't modify your Chrome profile.
+**Security Note**: Browser Secure creates isolated profiles for automation without modifying your existing Chrome profiles. When using `--profile`, it reads from (but does not write to) existing profiles.
 
 ## Setup
 
@@ -202,7 +202,9 @@ The setup automatically handles:
 
 After setup, configure your preferred vault using **environment variables** (recommended) or direct CLI login:
 
-#### Option A: .env File (Recommended for Automation)
+#### Option A: .env File (Convenience for Automation)
+
+> ⚠️ **Security Note:** `.env` files store credentials in plaintext. Only use this on trusted, private machines. Vault integration (Bitwarden/1Password) is the recommended secure approach.
 
 ```bash
 cd ~/.openclaw/workspace/skills/browser-secure

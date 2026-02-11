@@ -1,6 +1,6 @@
 {
   "name": "browser-secure",
-  "version": "1.0.0",
+  "version": "0.2.0",
   "description": "Secure browser automation with vault integration, approval gates, and audit logging",
   "type": "module",
   "main": "dist/cli.js",
@@ -28,5 +28,14 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "optionalEnv": {
+    "BW_CLIENTID": "Bitwarden API key ID (for automation - stored in .env only on trusted machines)",
+    "BW_CLIENTSECRET": "Bitwarden API key secret (for automation - stored in .env only on trusted machines)",
+    "BW_PASSWORD": "Bitwarden master password (alternative to session token)",
+    "BW_SESSION": "Bitwarden session token (from 'bw unlock --raw')",
+    "OP_SERVICE_ACCOUNT_TOKEN": "1Password service account token",
+    "BROWSER_SECURE_CONFIG": "Custom config file path",
+    "BROWSER_SECURE_TIMEOUT": "Session timeout override in seconds"
   }
 }
