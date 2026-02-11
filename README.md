@@ -6,7 +6,7 @@
 
 **"Never trust, always verify, encrypt everything, audit all actions"**
 
-Unlike traditional browser automation that stores credentials in plain text or environment variables, Browser Secure keeps your passwords encrypted in your vault until the exact moment they're needed. No passwords in CLI history, no credentials in logs, no plaintext in memory longer than necessary.
+Browser Secure fetches credentials from your password manager (Bitwarden or 1Password) only when needed. Credentials aren't stored in shell history, log files, or environment variables. They're retrieved from the vault, used for the login action, then discarded from memory.
 
 ---
 
