@@ -108,11 +108,16 @@ function writeAuditLog(session: AuditSession): void {
   const logDir = path.dirname(logPath);
 
   if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
+    fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   }
 
   const line = JSON.stringify(session) + '\n';
-  fs.appendFileSync(logPath, line, 'utf-8');
+  // Create file with 0600 if missing; appendFileSync respects existing mode.
+  if (!fs.existsSync(logPath)) {
+    fs.writeFileSync(logPath, line, { encoding: 'utf-8', mode: 0o600 });
+  } else {
+    fs.appendFileSync(logPath, line, 'utf-8');
+  }
 }
 
 async function sendAuditWebhook(session: AuditSession): Promise<void> {
@@ -191,5 +196,5 @@ export function rotateAuditLog(retentionDays: number): void {
     }
   });
 
-  fs.writeFileSync(logPath, recent.join('\n') + '\n', 'utf-8');
+  fs.writeFileSync(logPath, recent.join('\n') + '\n', { encoding: 'utf-8', mode: 0o600 });
 }

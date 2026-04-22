@@ -22,6 +22,18 @@ import {
 } from '../security/approval.js';
 import { validateUrl } from '../security/network.js';
 import { ChromeProfile } from './chrome-profiles.js';
+import {
+  startDaemon,
+  stopDaemon,
+  isDaemonRunning,
+  getDaemonStatus,
+  loadDaemonState,
+  DaemonState
+} from './daemon.js';
+import {
+  logNavigationError,
+  logSessionError
+} from '../utils/error-log.js';
 
 // Detect system Chrome path
 function getChromePath(): string | undefined {
@@ -76,6 +88,10 @@ function getChromePath(): string | undefined {
 let browser: Browser | null = null;
 let page: Page | null = null;
 let actionCounter = 0;
+
+// Daemon mode: browser persists across tasks
+let daemonState: DaemonState | null = null;
+let daemonBrowser: Browser | null = null;  // separate from `browser` (non-daemon)
 
 interface SecureSession {
   id: string;
@@ -205,34 +221,63 @@ export async function startBrowser(url: string, options: BrowserOptions = {}): P
     console.log('⚠️  System Chrome not found, using bundled Chromium (extensions unavailable)');
   }
 
-  if (options.profile) {
-    // Use persistent context with Chrome profile
-    console.log(`🔐 Using Chrome profile: ${options.profile.name} [${options.profile.id}]`);
+  // ─── DAEMON MODE ───────────────────────────────────────────────────────────
+  // If a daemon is already running for this profile, connect to it and open a new tab.
+  // Otherwise, fall back to the existing launch logic (non-daemon, closed after each task).
+  const useProfile = !!options.profile;
 
-    const userDataDir = options.profile.path.replace(/\/Default$/, '').replace(/\/Profile \d+$/, '');
-    const profileArg = options.profile.id === 'Default' ? '' : `--profile-directory=${options.profile.id}`;
+  if (useProfile) {
+    const existingDaemon = loadDaemonState();
 
-    const context = await chromium.launchPersistentContext(userDataDir, {
-      headless: options.headless ?? false,
-      executablePath: chromePath,
-      args: profileArg ? [profileArg] : [],
-      ...(config.isolation.incognitoMode ? {} : {})
-    });
+    if (existingDaemon && isDaemonRunning(existingDaemon) && existingDaemon.profileId === options.profile!.id) {
+      // Same profile daemon: connect and open a new tab
+      console.log(`🔁 Reusing existing daemon for profile: ${existingDaemon.profile} [${existingDaemon.profileId}]`);
+      daemonState = existingDaemon;
+      daemonBrowser = await chromium.connectOverCDP(existingDaemon.wsUrl);
 
-    page = await context.newPage();
+      const ctx = await daemonBrowser.newContext({
+        storageState: config.isolation.incognitoMode ? undefined : undefined,
+      });
+      page = await ctx.newPage();
+      console.log(`✅ Opened new tab in daemon (profile: ${daemonState.profile} [${daemonState.profileId}])`);
+
+    } else {
+      // No daemon for this profile (or daemon stale) — use non-daemon persistent profile
+      const prof = options.profile!;
+      console.log(`🔐 Using Chrome profile: ${prof.name} [${prof.id}]`);
+
+      if (chromePath) {
+        browser = await chromium.launch({
+          headless: options.headless ?? false,
+          executablePath: chromePath,
+          args: [
+            prof.id === 'Default' ? '' : `--profile-directory=${prof.id}`,
+            '--disable-gpu',
+            '--no-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-software-rasterizer',
+            '--disable-webgl',
+            '--disable-accelerated-2d-canvas',
+          ].filter(Boolean) as string[],
+        });
+      } else {
+        browser = await chromium.launch({ headless: options.headless ?? false });
+      }
+
+      const context = await browser.newContext({
+        storageState: config.isolation.incognitoMode ? undefined : undefined,
+      });
+      page = await context.newPage();
+    }
   } else {
-    // Use isolated incognito context (default secure behavior)
+    // No profile: use Playwright's bundled Chromium (isolated, no cookies from system Chrome)
+    // No executablePath → Playwright uses its bundled browser
     browser = await chromium.launch({
       headless: options.headless ?? false,
-      executablePath: chromePath,
     });
-
-    const context = await browser.newContext({
-      // Incognito: no persistent storage
-      storageState: config.isolation.incognitoMode ? undefined : undefined,
-    });
-
+    const context = await browser.newContext();
     page = await context.newPage();
+    console.log(`🔓 Using Playwright Chromium (bundled, isolated/incognito)`);
   }
 
   // Navigate to URL
@@ -249,8 +294,14 @@ export async function startBrowser(url: string, options: BrowserOptions = {}): P
       throw new Error(`Failed to load welcome page: ${e}`);
     }
   } else {
-    await page.goto(url);
-    console.log(`✅ Navigated to ${url}`);
+    try {
+      await page.goto(url);
+      console.log(`✅ Navigated to ${url}`);
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      logNavigationError(url, `Navigation failed: ${err.message}`, err);
+      throw e;
+    }
   }
 
   // Handle site authentication if specified or auto-vault is enabled
@@ -695,24 +746,32 @@ export async function closeBrowser(): Promise<void> {
 
   closeApprover();
 
-  if (browser) {
-    try {
-      await browser.close();
-    } catch (e) {
-      console.error(`Error closing browser: ${e}`);
-    }
-    browser = null;
+  if (daemonState) {
+    // Daemon mode: only close the page, keep browser alive
     page = null;
+    daemonBrowser = null;
+    console.log(`🔒 Tab closed (daemon running: ${daemonState.profile} [${daemonState.profileId}])`);
+    console.log(`   To stop daemon: browser-secure daemon stop`);
+  } else {
+    // Non-daemon: close the browser entirely
+    if (browser) {
+      try {
+        await browser.close();
+      } catch (e) {
+        console.error(`Error closing browser: ${e}`);
+      }
+      browser = null;
+      page = null;
+    }
   }
 
-  // Secure cleanup
+  // Secure cleanup (work dir, screenshots)
   const cleanupSuccess = secureCleanup();
 
   // Finalize audit
   const duration = Math.floor((Date.now() - startTime) / 1000);
   finalizeAuditSession(duration, cleanupSuccess);
 
-  console.log('🔒 Secure session closed');
   actionCounter = 0;
 }
 
@@ -754,15 +813,36 @@ export function getBrowserStatus(): {
   actionCount: number;
   suspended?: boolean;
   warningShown?: boolean;
+  daemon?: {
+    profile: string;
+    profileId: string;
+    pid: number;
+    port: number;
+    uptime: string;
+  };
 } {
+  const daemon = daemonState
+    ? {
+        profile: daemonState.profile,
+        profileId: daemonState.profileId,
+        pid: daemonState.pid,
+        port: daemonState.port,
+        uptime: (() => {
+          const s = Math.floor((Date.now() - new Date(daemonState!.startedAt).getTime()) / 1000);
+          return `${Math.floor(s / 60)}m ${s % 60}s`;
+        })()
+      }
+    : undefined;
+
   return {
-    active: !!browser,
+    active: !!browser || !!daemonBrowser,
     sessionId: activeSession?.id,
     timeRemaining: activeSession ? Math.floor((activeSession.maxDuration - (Date.now() - activeSession.startTime)) / 1000) : undefined,
     site: activeSession?.site,
     actionCount: actionCounter,
     suspended: activeSession?.suspended,
-    warningShown: activeSession?.warningShown
+    warningShown: activeSession?.warningShown,
+    daemon
   };
 }
 

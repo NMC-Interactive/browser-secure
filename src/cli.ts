@@ -1,10 +1,20 @@
 #!/usr/bin/env node
 
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { Command } from 'commander';
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+
+// Load .env from the parent skills/ directory — kept outside this skill's
+// source tree so credentials don't live alongside distributed code.
+// Override with BROWSER_SECURE_ENV if a custom location is needed.
+{
+  const __envFile = fileURLToPath(import.meta.url);
+  const skillRoot = path.resolve(path.dirname(__envFile), '..');
+  const defaultEnvPath = path.resolve(skillRoot, '..', '.env');
+  dotenv.config({ path: process.env.BROWSER_SECURE_ENV || defaultEnvPath });
+}
 import {
   startBrowser,
   performAction,
@@ -14,7 +24,28 @@ import {
   suspendSession,
   resumeSession
 } from './browser/secure-session.js';
+import {
+  startDaemon,
+  stopDaemon,
+  printDaemonStatus,
+  getDaemonStatus,
+  isDaemonRunning
+} from './browser/daemon.js';
 import { readAuditLog, rotateAuditLog } from './security/audit.js';
+import {
+  logError,
+  logLaunchError,
+  logNavigationError,
+  logVaultError,
+  logApprovalError,
+  logDaemonError,
+  logCredentialError,
+  logSessionError,
+  readErrorLog,
+  getErrorStats,
+  clearErrorLog,
+  ErrorLevel
+} from './utils/error-log.js';
 import { loadConfig, saveConfig, getConfigPath, checkCredentialSource } from './config/loader.js';
 import { listAvailableVaults, getSiteCredentials } from './vault/index.js';
 import { clearCredentialCache } from './security/approval.js';
@@ -41,8 +72,8 @@ program
   .option('--auto-vault', 'Auto-discover credentials from vault (interactive)')
   .option('--headless', 'Run in headless mode')
   .option('-t, --timeout <seconds>', 'Session timeout in seconds', '1800')
-  .option('--unattended', 'Run in unattended mode (default: true)', true)
-  .option('--interactive', 'Enable interactive approval prompts (overrides --unattended)')
+  .option('--unattended', 'Run in unattended mode for automation (default: interactive approvals)')
+  .option('--interactive', 'Force interactive approvals (default)')
   .option('--skip-approval', 'Skip all approvals including destructive actions (DANGEROUS)')
   .option('--credential-source <source>', 'Credential source for unattended mode (env|vault|cache)', 'vault')
   .option('-p, --profile <profile>', 'Chrome profile to use (id or "select" to choose interactively)')
@@ -63,9 +94,8 @@ program
         process.exit(0);
       }
 
-      // Determine mode: interactive overrides unattended
-      const isInteractive = options.interactive === true;
-      const isUnattended = !isInteractive;
+      // Determine mode: unattended must be explicit; interactive is the default
+      const isUnattended = options.unattended === true && options.interactive !== true;
 
       // Validate credential source for unattended mode
       const credentialSource = options.credentialSource;
@@ -77,6 +107,7 @@ program
       if (isUnattended) {
         const sourceCheck = checkCredentialSource(credentialSource);
         if (!sourceCheck.valid) {
+          logCredentialError(`Credential check failed: ${sourceCheck.error}`, undefined, false);
           console.error(`Error: ${sourceCheck.error}`);
           process.exit(1);
         }
@@ -117,7 +148,12 @@ program
         } : undefined
       });
     } catch (e) {
-      console.error(`Error: ${e}`);
+      const err = e instanceof Error ? e : new Error(String(e));
+      logLaunchError(`Failed to start browser for navigate: ${url ?? 'welcome page'}`, err, {
+        url: url ?? 'welcome page',
+        profile: options.profile,
+      });
+      console.error(`Error: ${err.message}`);
       process.exit(1);
     }
   });
@@ -127,14 +163,13 @@ program
   .command('act <instruction>')
   .description('Perform a natural language action')
   .option('-y, --yes', 'Auto-approve without prompting (deprecated: use --unattended)')
-  .option('--unattended', 'Run in unattended mode (default: true)', true)
-  .option('--interactive', 'Enable interactive approval prompts (overrides --unattended)')
+  .option('--unattended', 'Run in unattended mode for automation (default: interactive approvals)')
+  .option('--interactive', 'Force interactive approvals (default)')
   .option('--skip-approval', 'Skip all approvals including destructive actions (DANGEROUS)')
   .action(async (instruction, options) => {
     try {
-      // Determine mode: interactive overrides unattended
-      const isInteractive = options.interactive === true;
-      const isUnattended = !isInteractive;
+      // Determine mode: unattended must be explicit; interactive is the default
+      const isUnattended = options.unattended === true && options.interactive !== true;
 
       await performAction(instruction, {
         autoApprove: options.yes,
@@ -145,7 +180,9 @@ program
         } : undefined
       });
     } catch (e) {
-      console.error(`Error: ${e}`);
+      const err = e instanceof Error ? e : new Error(String(e));
+      logSessionError(`Failed to perform action: ${instruction}`, err);
+      console.error(`Error: ${err.message}`);
       process.exit(1);
     }
   });
@@ -225,9 +262,23 @@ program
 // Status command
 program
   .command('status')
-  .description('Show current session status')
+  .description('Show current session and daemon status')
   .action(() => {
     const status = getBrowserStatus();
+    const daemon = getDaemonStatus();
+
+    // Show daemon status first
+    if (daemon) {
+      console.log('Daemon: RUNNING');
+      console.log(`  Profile: ${daemon.profile} [${daemon.profileId}]`);
+      console.log(`  PID: ${daemon.pid}`);
+      console.log(`  CDP port: ${daemon.port}`);
+      console.log('');
+    } else if (isDaemonRunning()) {
+      console.log('Daemon: STALE (run: browser-secure daemon stop to clean up)');
+      console.log('');
+    }
+
     if (status.active) {
       console.log('Session: ACTIVE');
       console.log(`  ID: ${status.sessionId}`);
@@ -418,6 +469,104 @@ program
     console.log('Use --list to list profiles or --create <name> to create a new profile');
   });
 
+// Daemon command
+program
+  .command('daemon')
+  .description('Manage the persistent Chrome daemon')
+  .argument('[subcommand]', 'start, stop, or status')
+  .option('-s, --start', 'Start the daemon (defaults to Default profile)')
+  .option('-S, --stop', 'Stop the daemon')
+  .option('--status', 'Show daemon status')
+  .option('-p, --profile <name>', 'Profile to use when starting daemon (id or name)')
+  .action(async (subcommand, options) => {
+    const cmd = subcommand ?? (options.stop ? 'stop' : options.status ? 'status' : null);
+
+    if (cmd === 'stop') {
+      await stopDaemon();
+      return;
+    }
+    if (cmd === 'status') {
+      printDaemonStatus();
+      return;
+    }
+    if (cmd === 'start' || options.start || options.profile) {
+      try {
+        await startDaemon(options.profile);
+      } catch (e: any) {
+        const err = e instanceof Error ? e : new Error(String(e));
+        logDaemonError(`Daemon start failed for profile "${options.profile ?? 'Default'}"`, err);
+        console.error(`Error: ${err.message}`);
+        process.exit(1);
+      }
+      return;
+    }
+
+    // No args: show status
+    printDaemonStatus();
+  });
+
+// Errors command
+program
+  .command('errors')
+  .description('View and manage error logs')
+  .option('--stats', 'Show error statistics')
+  .option('--type <name>', 'Filter by error type (e.g. LaunchError, NavigationError)')
+  .option('--level <level>', 'Filter by level (ERROR, WARN, INFO, DEBUG)')
+  .option('--since <date>', 'Show errors since date (ISO format)')
+  .option('--limit <n>', 'Limit number of entries shown', '50')
+  .option('--clear', 'Clear the error log')
+  .action((options) => {
+    if (options.clear) {
+      clearErrorLog();
+      console.log('✅ Error log cleared');
+      return;
+    }
+
+    if (options.stats) {
+      const stats = getErrorStats();
+      console.log(`Total errors: ${stats.total}`);
+      if (stats.total === 0) return;
+      console.log('\nBy type:');
+      for (const [t, n] of Object.entries(stats.byType)) {
+        console.log(`  ${t}: ${n}`);
+      }
+      console.log('\nBy level:');
+      for (const [l, n] of Object.entries(stats.byLevel)) {
+        console.log(`  ${l}: ${n}`);
+      }
+      return;
+    }
+
+    const entries = readErrorLog({
+      level: options.level as ErrorLevel | undefined,
+      errorType: options.type,
+      since: options.since,
+      limit: parseInt(options.limit),
+    });
+
+    if (entries.length === 0) {
+      console.log('No errors found.');
+      return;
+    }
+
+    for (const e of entries) {
+      const icon = e.level === 'ERROR' ? '❌' : e.level === 'WARN' ? '⚠️' : 'ℹ️';
+      console.log(`\n${icon} [${e.level}] ${e.errorType}`);
+      console.log(`   ${e.timestamp}${e.sessionId ? ` | session: ${e.sessionId}` : ''}`);
+      console.log(`   ${e.message}`);
+      if (e.context) {
+        for (const [k, v] of Object.entries(e.context)) {
+          console.log(`   ${k}: ${v}`);
+        }
+      }
+      if (e.stack) {
+        const firstLine = e.stack.split('\n')[0];
+        if (firstLine) console.log(`   stack: ${firstLine.trim()}`);
+      }
+    }
+    console.log(`\nShowing ${entries.length} of ${entries.length} entries. Run with --help for filters.`);
+  });
+
 // Cleanup command
 program
   .command('cleanup')
@@ -443,6 +592,26 @@ process.on('SIGINT', async () => {
 process.on('SIGTERM', async () => {
   await closeBrowser();
   process.exit(0);
+});
+
+// Global error handlers — never let errors disappear silently
+process.on('uncaughtException', (err: Error) => {
+  logSessionError(`Uncaught exception: ${err.message}`, err);
+  console.error(`\n❌ Uncaught exception: ${err.message}`);
+  if (process.env.DEBUG) {
+    console.error(err.stack);
+  }
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  const err = reason instanceof Error ? reason : undefined;
+  logSessionError(`Unhandled promise rejection: ${msg}`, err);
+  console.error(`\n❌ Unhandled rejection: ${msg}`);
+  if (process.env.DEBUG) {
+    console.error(reason);
+  }
 });
 
 program.parse();

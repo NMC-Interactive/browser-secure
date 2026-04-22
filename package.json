@@ -1,6 +1,6 @@
 {
   "name": "browser-secure",
-  "version": "0.2.0",
+  "version": "1.0.2",
   "description": "Secure browser automation with vault integration, approval gates, and audit logging",
   "type": "module",
   "main": "dist/cli.js",

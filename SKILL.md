@@ -151,7 +151,65 @@ browser-secure navigate https://gmail.com --profile select
 | **Incognito (default)** | ❌ None | ❌ None | ❌ None | Secure, isolated testing |
 | **Chrome Profile** | ✅ Yes | ✅ Yes | ✅ Yes | Access existing sessions |
 
-**Security Note**: Browser Secure creates isolated profiles for automation without modifying your existing Chrome profiles. When using `--profile`, it reads from (but does not write to) existing profiles.
+**Security Note**: When `--profile` is set, Browser Secure launches Chrome against the real profile directory, so Chrome will update cookies, history, preferences, and session storage in that profile as it normally would. For true isolation use the default incognito mode, or create a dedicated automation profile (`browser-secure profile --create …`) rather than pointing at your personal `Default` profile.
+
+## Daemon Mode (Session Reuse)
+
+By default, each `navigate` command launches a new Chrome instance and closes it after the task. This is secure but slow on repeated tasks.
+
+**Daemon mode** keeps Chrome running persistently with a debug port, so subsequent tasks open new tabs in the same Chrome session — cookies, logins, and state are preserved across tasks.
+
+### Workflow
+
+```bash
+# Start the daemon (one-time per session)
+browser-secure daemon start --profile Default
+
+# Run multiple tasks — each opens a new tab in the same Chrome
+browser-secure navigate https://mail.google.com
+browser-secure navigate https://github.com
+browser-secure act "click the notifications icon"
+
+# Stop when done
+browser-secure daemon stop
+```
+
+### Key Behaviors
+
+- **Daemon uses a SEPARATE Chrome profile directory** — does not share cookies/logins with your normal Chrome browser. Your normal Chrome tabs are unaffected.
+- **`navigate` with a profile → connects to daemon** if one is running for that profile; opens a new tab in the existing Chrome.
+- **Different profile** → refuses to connect to wrong daemon; stop the current daemon first.
+- **`daemon stop`** cleanly terminates the Chrome daemon process.
+
+### Commands
+
+```bash
+browser-secure daemon start           # Start with Default profile
+browser-secure daemon start --profile Default  # Explicit
+browser-secure daemon status          # Show daemon status
+browser-secure daemon stop            # Stop daemon
+browser-secure status                 # Shows daemon + session info
+```
+
+### Status Output
+
+```
+Daemon: RUNNING
+  Profile: Default [Default]
+  PID: 12345
+  Uptime: 5m 32s
+  Started: 2026-03-31T08:00:00.000Z
+
+Session: INACTIVE
+```
+
+### macOS Note
+
+On macOS, Chrome cannot start as a separate debugging instance when it is the **default browser**. The daemon automatically handles this by:
+1. Starting Chrome as a separate process (doesn't affect your running Chrome)
+2. Using a temp profile directory for isolation
+
+Your tabs in normal Chrome are unaffected by the daemon.
 
 ## Setup
 
@@ -165,14 +223,7 @@ Hey Clawdbot, install browser-secure for me
 
 Clawdbot will handle everything: check prerequisites, auto-install dependencies, build, and configure.
 
-### Option 2: Install from GitHub
-
-```bash
-# Clone and install
-curl -fsSL https://raw.githubusercontent.com/openclaw/openclaw/main/scripts/install-browser-secure.sh | bash
-```
-
-### Option 3: Manual Setup (Advanced)
+### Option 2: Manual Setup (Advanced)
 
 If you prefer full control or are developing on the tool:
 
@@ -202,37 +253,10 @@ The setup automatically handles:
 
 After setup, configure your preferred vault using **environment variables** (recommended) or direct CLI login:
 
-#### Option A: .env File (Convenience for Automation)
+#### Option A: Direct CLI Login (Recommended)
 
-> ⚠️ **Security Note:** `.env` files store credentials in plaintext. Only use this on trusted, private machines. Vault integration (Bitwarden/1Password) is the recommended secure approach.
-
-```bash
-cd ~/.openclaw/workspace/skills/browser-secure
-cp .env.example .env
-# Edit .env with your credentials
-```
-
-**Full Automation (API Key + Password):**
-```bash
-# .env - For fully automated vault access
-BW_CLIENTID=user.xxx-xxx
-BW_CLIENTSECRET=your-secret-here
-BW_PASSWORD=your-master-password
-```
-
-**How it works:**
-1. `BW_CLIENTID/BW_CLIENTSECRET` → Authenticates with Bitwarden (replaces username/password)
-2. `BW_PASSWORD` → Decrypts your vault (required for automated access)
-
-**Alternative: Session Token**
-```bash
-# If you prefer not to store your master password:
-export BW_SESSION=$(bw unlock --raw)
-# Then add to .env:
-# BW_SESSION=xxx...
-```
-
-#### Option B: Direct CLI Login
+Unlock the vault manually and pass the session token via environment — your
+master password never touches disk.
 
 ```bash
 # Bitwarden (recommended - free)
@@ -247,6 +271,40 @@ op signin
 # Test vault access
 browser-secure vault --list
 ```
+
+#### Option B: .env File (Automation, Trusted Hosts Only)
+
+> ⚠️ **Security Note:** `.env` stores credentials in plaintext. Only use this
+> on trusted, private machines. Prefer Option A whenever possible.
+>
+> The `.env` file lives in the **parent skills/ directory** (one level above
+> `browser-secure/`), not inside this skill. This keeps credentials out of
+> the skill's source tree. Override with `BROWSER_SECURE_ENV=/path/.env`.
+
+```bash
+cd ~/.openclaw/workspace/skills
+cp .env.example .env
+chmod 600 .env
+# Edit .env with your credentials
+```
+
+**Session Token (preferred — no master password on disk):**
+```bash
+# skills/.env
+BW_SESSION=$(bw unlock --raw)   # paste the output
+```
+
+**Full Automation (API Key + Master Password — highest risk):**
+```bash
+# skills/.env — only on a trusted, single-user host
+BW_CLIENTID=user.xxx-xxx
+BW_CLIENTSECRET=your-secret-here
+BW_PASSWORD=your-master-password
+```
+
+**How it works:**
+1. `BW_CLIENTID/BW_CLIENTSECRET` → Authenticates with Bitwarden (replaces username/password)
+2. `BW_PASSWORD` → Decrypts your vault (required for automated access)
 
 ### Verify Installation
 
@@ -267,12 +325,13 @@ browser-secure close
 # Install
 brew install bitwarden-cli
 
-# Setup .env file
-cd ~/.openclaw/workspace/skills/browser-secure
+# Setup .env file (lives in parent skills/ dir, not inside this skill)
+cd ~/.openclaw/workspace/skills
 cp .env.example .env
+chmod 600 .env
 # Edit .env and add:
 #   BW_CLIENTID=your-api-key-id
-#   BW_CLIENTSECRET=your-api-key-secret  
+#   BW_CLIENTSECRET=your-api-key-secret
 #   BW_PASSWORD=your-master-password
 
 # Use - credentials auto-loaded from .env
