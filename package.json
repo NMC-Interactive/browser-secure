@@ -2,6 +2,7 @@
   "name": "browser-secure",
   "version": "1.0.2",
   "description": "Secure browser automation with vault integration, approval gates, and audit logging",
+  "license": "MIT-0",
   "type": "module",
   "main": "dist/cli.js",
   "bin": {
